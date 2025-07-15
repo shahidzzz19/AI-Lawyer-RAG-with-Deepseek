@@ -1,3 +1,8 @@
+<p align="center">
+  <a href="https://github.com/AbhaySingh71/AI-Lawyer-RAG-with-Deepseek">
+    <img src="https://img.shields.io/github/stars/AbhaySingh71/AI-Lawyer-RAG-with-Deepseek?style=social" alt="GitHub Stars">
+  </a>
+</p>
 <body>
     <h1>⚖️ AI Lawyer - RAG with DeepSeek R1</h1>
      <p>An AI-powered legal chatbot that leverages Retrieval-Augmented Generation (RAG) with <strong>DeepSeek R1</strong> and <strong>Ollama</strong> for advanced legal reasoning.</p>
