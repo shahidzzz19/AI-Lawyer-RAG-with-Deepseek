@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
+import time
+import logging
 
 # Safe import for groq-specific error class
 try:
@@ -15,6 +17,10 @@ except Exception:
         pass
 
 load_dotenv()
+
+# configure basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # =========================
 # Step 1: Setup LLM (DeepSeek R1 via Groq)
@@ -86,6 +92,49 @@ Answer:
 """
 
 
+def _truncate_context_in_inputs(inputs, factor=0.8, key="context"):
+    """If inputs contain a 'context' string, truncate it by factor and return modified inputs."""
+    if key in inputs:
+        ctx = inputs[key]
+        if isinstance(ctx, str) and len(ctx) > 0:
+            new_len = max(100, int(len(ctx) * factor))
+            inputs = dict(inputs)
+            inputs[key] = ctx[:new_len]
+    return inputs
+
+
+def safe_invoke(chain, inputs, retries=3, base_delay=1.0, max_delay=10.0):
+    """
+    Invoke a LangChain runnable (chain) with retries and exponential backoff.
+    On BadRequestError, attempt to truncate the 'context' key before retrying.
+    Returns chain.invoke(...) result or raises the final exception.
+    """
+    attempt = 0
+    delay = base_delay
+    while True:
+        try:
+            logger.info("Invoking chain (attempt %d)...", attempt + 1)
+            return chain.invoke(inputs)
+        except BadRequestError as bre:
+            attempt += 1
+            logger.warning("BadRequestError on attempt %d: %s", attempt, getattr(bre, "args", bre))
+            if attempt > retries:
+                logger.error("Exceeded retries for BadRequestError.")
+                raise
+            # progressively shorten context to try to fit model limits
+            inputs = _truncate_context_in_inputs(inputs, factor=0.75)
+        except Exception as e:
+            attempt += 1
+            logger.warning("Exception on attempt %d: %s", attempt, getattr(e, "args", e))
+            if attempt > retries:
+                logger.error("Exceeded retries for exception.")
+                raise
+        # backoff
+        logger.info("Sleeping for %.1f seconds before retrying...", delay)
+        time.sleep(min(delay, max_delay))
+        delay = min(delay * 2, max_delay)
+
+
 def answer_query(documents, model, query, history: str = ""):
     """
     Answer a user query using retrieved documents and chat history.
@@ -97,13 +146,17 @@ def answer_query(documents, model, query, history: str = ""):
     prompt = ChatPromptTemplate.from_template(custom_prompt_template)
     chain = prompt | model
 
-    response = chain.invoke(
-        {
-            "question": query,
-            "context": context,
-            "history": history,
-        }
-    )
+    inputs = {
+        "question": query,
+        "context": context,
+        "history": history,
+    }
+
+    try:
+        response = safe_invoke(chain, inputs)
+    except Exception as e:
+        logger.error("Failed to get answer from LLM: %s", e)
+        return f"LLM request failed: {e}"
     return response
 
 
@@ -134,13 +187,15 @@ def summarize_document(documents):
     prompt = ChatPromptTemplate.from_template(summary_prompt)
     chain = prompt | llm_model
 
-    # Wrap the LLM call to catch Groq API BadRequest and return a helpful message
+    inputs = {"context": context}
+
+    # Use safe_invoke to retry and truncate context on failures
     try:
-        return chain.invoke({"context": context})
+        return safe_invoke(chain, inputs)
     except BadRequestError:
         return (
-            "LLM request failed due to a BadRequest from the Groq API. "
-            "Check model parameters (e.g., max_tokens), the model name, and your GROQ_API_KEY."
+            "LLM request failed due to a BadRequest from the Groq API after retries. "
+            "Check model parameters, the model name, and your GROQ_API_KEY."
         )
     except Exception as e:
         return f"LLM request failed: {e}"
