@@ -7,6 +7,13 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 
+# Safe import for groq-specific error class
+try:
+    from groq import BadRequestError
+except Exception:
+    class BadRequestError(Exception):
+        pass
+
 load_dotenv()
 
 # =========================
@@ -20,11 +27,12 @@ if not groq_api_key:
         "Please set it in Streamlit Secrets (GROQ_API_KEY = \"...\")."
     )
 
+# Use an explicit integer for max_tokens to avoid sending null to the API
 llm_model = ChatGroq(
     groq_api_key=groq_api_key,
     model="deepseek-r1-distill-llama-70b",
     temperature=0,
-    max_tokens=None,
+    max_tokens=1024,  # changed from None to a safe integer
     reasoning_format="parsed",
 )
 
@@ -126,7 +134,16 @@ def summarize_document(documents):
     prompt = ChatPromptTemplate.from_template(summary_prompt)
     chain = prompt | llm_model
 
-    return chain.invoke({"context": context})
+    # Wrap the LLM call to catch Groq API BadRequest and return a helpful message
+    try:
+        return chain.invoke({"context": context})
+    except BadRequestError:
+        return (
+            "LLM request failed due to a BadRequest from the Groq API. "
+            "Check model parameters (e.g., max_tokens), the model name, and your GROQ_API_KEY."
+        )
+    except Exception as e:
+        return f"LLM request failed: {e}"
 
 
 # =========================
